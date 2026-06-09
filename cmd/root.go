@@ -339,7 +339,7 @@ func handleAudit(ctx context.Context, res *discovery.DiscoveredResources, c *cli
 
 	if auditTemplate != "" {
 		if err := audit.RenderAuditReportWithTemplate(report, auditTemplate); err != nil {
-			os.Exit(1)
+			return err
 		}
 		return nil
 	}

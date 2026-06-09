@@ -39,57 +39,62 @@ func AnnotateTopologyWithViolations(topo *topology.Topology, nsResults []Namespa
 			violDimMap[string(v.Dimension)] = v
 		}
 
-		for _, child := range root.Children {
-			switch child.Type {
-			case topology.TypePod:
-				if v, ok := violDimMap[string(DimMaxPods)]; ok {
-					child.ViolationAnnotations = append(child.ViolationAnnotations, topology.ViolationAnnotation{
-						Action:     v.Action,
-						Dimension:  "pods",
-						Current:    v.CurrentValue,
-						Limit:      v.PolicyLimit,
-						OverPercent: v.OverPercent,
-					})
-				}
-				if v, ok := violDimMap[string(DimMaxContainerCPU)]; ok {
-					child.ViolationAnnotations = append(child.ViolationAnnotations, topology.ViolationAnnotation{
-						Action:     v.Action,
-						Dimension:  "containerCPU",
-						Current:    v.CurrentValue,
-						Limit:      v.PolicyLimit,
-						OverPercent: v.OverPercent,
-					})
-				}
-				if v, ok := violDimMap[string(DimMaxContainerMemory)]; ok {
-					child.ViolationAnnotations = append(child.ViolationAnnotations, topology.ViolationAnnotation{
-						Action:     v.Action,
-						Dimension:  "containerMem",
-						Current:    v.CurrentValue,
-						Limit:      v.PolicyLimit,
-						OverPercent: v.OverPercent,
-					})
-				}
-			case topology.TypeDeployment:
-				if v, ok := violDimMap[string(DimMaxDeployments)]; ok {
-					child.ViolationAnnotations = append(child.ViolationAnnotations, topology.ViolationAnnotation{
-						Action:     v.Action,
-						Dimension:  "deployments",
-						Current:    v.CurrentValue,
-						Limit:      v.PolicyLimit,
-						OverPercent: v.OverPercent,
-					})
-				}
-			case topology.TypeService:
-				if v, ok := violDimMap[string(DimMaxServices)]; ok {
-					child.ViolationAnnotations = append(child.ViolationAnnotations, topology.ViolationAnnotation{
-						Action:     v.Action,
-						Dimension:  "services",
-						Current:    v.CurrentValue,
-						Limit:      v.PolicyLimit,
-						OverPercent: v.OverPercent,
-					})
-				}
+		annotateDescendants(root, violDimMap)
+	}
+}
+
+func annotateDescendants(node *topology.TopoNode, violDimMap map[string]Violation) {
+	for _, child := range node.Children {
+		switch child.Type {
+		case topology.TypePod:
+			if v, ok := violDimMap[string(DimMaxPods)]; ok {
+				child.ViolationAnnotations = append(child.ViolationAnnotations, topology.ViolationAnnotation{
+					Action:      v.Action,
+					Dimension:   "pods",
+					Current:     v.CurrentValue,
+					Limit:       v.PolicyLimit,
+					OverPercent: v.OverPercent,
+				})
+			}
+			if v, ok := violDimMap[string(DimMaxContainerCPU)]; ok {
+				child.ViolationAnnotations = append(child.ViolationAnnotations, topology.ViolationAnnotation{
+					Action:      v.Action,
+					Dimension:   "containerCPU",
+					Current:     v.CurrentValue,
+					Limit:       v.PolicyLimit,
+					OverPercent: v.OverPercent,
+				})
+			}
+			if v, ok := violDimMap[string(DimMaxContainerMemory)]; ok {
+				child.ViolationAnnotations = append(child.ViolationAnnotations, topology.ViolationAnnotation{
+					Action:      v.Action,
+					Dimension:   "containerMem",
+					Current:     v.CurrentValue,
+					Limit:       v.PolicyLimit,
+					OverPercent: v.OverPercent,
+				})
+			}
+		case topology.TypeDeployment:
+			if v, ok := violDimMap[string(DimMaxDeployments)]; ok {
+				child.ViolationAnnotations = append(child.ViolationAnnotations, topology.ViolationAnnotation{
+					Action:      v.Action,
+					Dimension:   "deployments",
+					Current:     v.CurrentValue,
+					Limit:       v.PolicyLimit,
+					OverPercent: v.OverPercent,
+				})
+			}
+		case topology.TypeService:
+			if v, ok := violDimMap[string(DimMaxServices)]; ok {
+				child.ViolationAnnotations = append(child.ViolationAnnotations, topology.ViolationAnnotation{
+					Action:      v.Action,
+					Dimension:   "services",
+					Current:     v.CurrentValue,
+					Limit:       v.PolicyLimit,
+					OverPercent: v.OverPercent,
+				})
 			}
 		}
+		annotateDescendants(child, violDimMap)
 	}
 }

@@ -14,7 +14,6 @@ func RenderAuditReportWithTemplate(report *AuditReport, templatePath string) err
 
 	tmpl, err := template.New("audit").Parse(string(data))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "template parse error: %v\n", err)
 		return fmt.Errorf("template parse error: %w", err)
 	}
 
