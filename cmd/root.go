@@ -102,7 +102,7 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	if policyFile != "" {
-		return handleAudit(res, version.GitVersion)
+		return handleAudit(res, c.ClusterName)
 	}
 
 	fmt.Fprintf(os.Stderr, "Building topology...\n")
@@ -299,7 +299,7 @@ func renderDiagOutput(d *diagnosis.DiagnosisResult) string {
 	return sb.String()
 }
 
-func handleAudit(res *discovery.DiscoveredResources, clusterVersion string) error {
+func handleAudit(res *discovery.DiscoveredResources, clusterName string) error {
 	fmt.Fprintf(os.Stderr, "Loading quota policies...\n")
 	policies, err := audit.LoadPolicies(policyFile)
 	if err != nil {
@@ -313,9 +313,8 @@ func handleAudit(res *discovery.DiscoveredResources, clusterVersion string) erro
 	fmt.Fprintf(os.Stderr, "Evaluating policies against resource usage...\n")
 	nsResults := audit.EvaluatePolicies(policies, stats)
 
-	clusterName := "kubernetes"
-	if clusterVersion != "" {
-		clusterName = clusterVersion
+	if clusterName == "" {
+		clusterName = "unknown"
 	}
 
 	report := audit.BuildAuditReport(policies, nsResults, policyFile, clusterName)

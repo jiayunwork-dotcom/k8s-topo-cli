@@ -24,6 +24,7 @@ type ClusterClient struct {
 	Config        *rest.Config
 	Namespace     string
 	Context       string
+	ClusterName   string
 }
 
 func NewClusterClient(kubeconfig, context, namespace string) (*ClusterClient, error) {
@@ -56,12 +57,15 @@ func NewClusterClient(kubeconfig, context, namespace string) (*ClusterClient, er
 		metricsClient = nil
 	}
 
+	clusterName := resolveClusterName(kubeconfig, context)
+
 	cc := &ClusterClient{
 		Clientset:     clientset,
 		MetricsClient: metricsClient,
 		Config:        config,
 		Namespace:     namespace,
 		Context:       context,
+		ClusterName:   clusterName,
 	}
 
 	if err := cc.validateConnection(); err != nil {
@@ -82,6 +86,28 @@ func buildConfig(kubeconfig, context string) (*rest.Config, error) {
 
 	clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
 	return clientConfig.ClientConfig()
+}
+
+func resolveClusterName(kubeconfig, context string) string {
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	loadingRules.ExplicitPath = kubeconfig
+
+	rawConfig, err := loadingRules.Load()
+	if err != nil {
+		return ""
+	}
+
+	ctxName := context
+	if ctxName == "" {
+		ctxName = rawConfig.CurrentContext
+	}
+
+	ctx, exists := rawConfig.Contexts[ctxName]
+	if !exists {
+		return ctxName
+	}
+
+	return ctx.Cluster
 }
 
 func (c *ClusterClient) validateConnection() error {
