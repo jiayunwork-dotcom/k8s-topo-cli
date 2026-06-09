@@ -23,17 +23,18 @@ import (
 )
 
 var (
-	kubeconfig  string
-	contextName string
-	namespace   string
-	topoMode    bool
-	tableMode   bool
-	interactive bool
-	outputFmt   string
-	showDiag    bool
-	snapshotOp  string
-	rulesFile   string
-	traceTarget string
+	kubeconfig     string
+	contextName    string
+	namespace      string
+	topoMode       bool
+	tableMode      bool
+	interactive    bool
+	outputFmt      string
+	showDiag       bool
+	snapshotSave   string
+	snapshotDiff   string
+	rulesFile      string
+	traceTarget    string
 )
 
 var rootCmd = &cobra.Command{
@@ -52,7 +53,8 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&interactive, "interactive", "i", false, "Interactive TUI mode")
 	rootCmd.PersistentFlags().StringVarP(&outputFmt, "output", "o", "", "Output format: json, yaml, dot")
 	rootCmd.PersistentFlags().BoolVar(&showDiag, "diag", false, "Run anomaly diagnosis")
-	rootCmd.PersistentFlags().StringVar(&snapshotOp, "snapshot", "", "Snapshot operation: save <name> or diff <name>")
+	rootCmd.PersistentFlags().StringVar(&snapshotSave, "snapshot-save", "", "Save cluster state snapshot with given name")
+	rootCmd.PersistentFlags().StringVar(&snapshotDiff, "snapshot-diff", "", "Diff current cluster state against snapshot with given name")
 	rootCmd.PersistentFlags().StringVar(&rulesFile, "rules", "", "Path to custom alert rules YAML file")
 	rootCmd.PersistentFlags().StringVar(&traceTarget, "trace", "", "Trace upstream dependencies: <type>/<name> (e.g. pod/nginx-abc123)")
 }
@@ -88,7 +90,7 @@ func run(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "Warning: discovery completed with errors: %v\n", err)
 	}
 
-	if snapshotOp != "" {
+	if snapshotSave != "" || snapshotDiff != "" {
 		return handleSnapshot(res)
 	}
 
@@ -156,35 +158,26 @@ func run(cmd *cobra.Command, args []string) error {
 }
 
 func handleSnapshot(res *discovery.DiscoveredResources) error {
-	parts := strings.SplitN(snapshotOp, " ", 2)
-	if len(parts) != 2 {
-		return fmt.Errorf("invalid --snapshot format, use: save <name> or diff <name>")
-	}
-
-	op := parts[0]
-	name := parts[1]
-
-	switch op {
-	case "save":
-		if err := snapshot.SaveSnapshot(name, res); err != nil {
+	if snapshotSave != "" {
+		if err := snapshot.SaveSnapshot(snapshotSave, res); err != nil {
 			return fmt.Errorf("failed to save snapshot: %w", err)
 		}
-		fmt.Fprintf(os.Stderr, "Snapshot '%s' saved successfully.\n", name)
+		fmt.Fprintf(os.Stderr, "Snapshot '%s' saved successfully.\n", snapshotSave)
 		return nil
+	}
 
-	case "diff":
-		saved, err := snapshot.LoadSnapshot(name)
+	if snapshotDiff != "" {
+		saved, err := snapshot.LoadSnapshot(snapshotDiff)
 		if err != nil {
 			return fmt.Errorf("failed to load snapshot: %w", err)
 		}
 		current := snapshot.BuildCurrentSnapshot(res)
 		diffResult := snapshot.DiffSnapshot(current, saved)
-		fmt.Print(snapshot.RenderDiff(diffResult, name))
+		fmt.Print(snapshot.RenderDiff(diffResult, snapshotDiff))
 		return nil
-
-	default:
-		return fmt.Errorf("unknown snapshot operation '%s', use: save or diff", op)
 	}
+
+	return fmt.Errorf("no snapshot operation specified, use --snapshot-save <name> or --snapshot-diff <name>")
 }
 
 func handleTrace(ctx context.Context) error {

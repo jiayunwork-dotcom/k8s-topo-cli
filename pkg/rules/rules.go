@@ -316,8 +316,7 @@ func buildIngressFields(ing *networkingv1.Ingress) map[string]string {
 }
 
 func evaluateCondition(condition string, fields map[string]string) (bool, error) {
-	conditions := []string{condition}
-	ops := []string{"==", "!=", ">", ">=", "<", "<="}
+	ops := []string{">=", "<=", "==", "!=", ">", "<"}
 
 	for _, op := range ops {
 		if strings.Contains(condition, op) {
@@ -352,7 +351,6 @@ func evaluateCondition(condition string, fields map[string]string) (bool, error)
 		}
 	}
 
-	_ = conditions
 	return false, fmt.Errorf("unable to parse condition: %s", condition)
 }
 
