@@ -12,8 +12,12 @@ import (
 	"github.com/k8s-topo-cli/pkg/diagnosis"
 	"github.com/k8s-topo-cli/pkg/discovery"
 	"github.com/k8s-topo-cli/pkg/display"
+	"github.com/k8s-topo-cli/pkg/health"
 	"github.com/k8s-topo-cli/pkg/metrics"
 	"github.com/k8s-topo-cli/pkg/output"
+	"github.com/k8s-topo-cli/pkg/rules"
+	"github.com/k8s-topo-cli/pkg/snapshot"
+	"github.com/k8s-topo-cli/pkg/trace"
 	"github.com/k8s-topo-cli/pkg/tui"
 	"github.com/k8s-topo-cli/pkg/topology"
 )
@@ -27,6 +31,9 @@ var (
 	interactive bool
 	outputFmt   string
 	showDiag    bool
+	snapshotOp  string
+	rulesFile   string
+	traceTarget string
 )
 
 var rootCmd = &cobra.Command{
@@ -45,6 +52,9 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&interactive, "interactive", "i", false, "Interactive TUI mode")
 	rootCmd.PersistentFlags().StringVarP(&outputFmt, "output", "o", "", "Output format: json, yaml, dot")
 	rootCmd.PersistentFlags().BoolVar(&showDiag, "diag", false, "Run anomaly diagnosis")
+	rootCmd.PersistentFlags().StringVar(&snapshotOp, "snapshot", "", "Snapshot operation: save <name> or diff <name>")
+	rootCmd.PersistentFlags().StringVar(&rulesFile, "rules", "", "Path to custom alert rules YAML file")
+	rootCmd.PersistentFlags().StringVar(&traceTarget, "trace", "", "Trace upstream dependencies: <type>/<name> (e.g. pod/nginx-abc123)")
 }
 
 func Execute() {
@@ -56,6 +66,10 @@ func Execute() {
 
 func run(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
+
+	if traceTarget != "" {
+		return handleTrace(ctx)
+	}
 
 	fmt.Fprintf(os.Stderr, "Connecting to cluster...\n")
 
@@ -74,6 +88,10 @@ func run(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "Warning: discovery completed with errors: %v\n", err)
 	}
 
+	if snapshotOp != "" {
+		return handleSnapshot(res)
+	}
+
 	fmt.Fprintf(os.Stderr, "Building topology...\n")
 	topo := topology.BuildTopology(res)
 
@@ -87,6 +105,17 @@ func run(cmd *cobra.Command, args []string) error {
 		if showDiag || outputFmt == "" {
 			fmt.Fprintf(os.Stderr, "Running diagnosis...\n")
 			diagResult = diagnosis.Diagnose(ctx, c, res)
+		}
+	}
+
+	if rulesFile != "" {
+		fmt.Fprintf(os.Stderr, "Loading custom rules...\n")
+		ruleList, err := rules.LoadRules(rulesFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to load rules: %v\n", err)
+		} else {
+			alerts := rules.EvaluateRules(ruleList, res)
+			fmt.Print(rules.RenderAlerts(alerts))
 		}
 	}
 
@@ -111,6 +140,9 @@ func run(cmd *cobra.Command, args []string) error {
 	fmt.Print(display.RenderTree(topo, res))
 	fmt.Print(display.RenderResourceSummary(res))
 
+	healthResult := health.CalculateHealth(res, metricsResult)
+	fmt.Print(health.RenderHealthScore(healthResult))
+
 	if showDiag && diagResult != nil {
 		fmt.Print(renderDiagOutput(diagResult))
 	}
@@ -120,6 +152,65 @@ func run(cmd *cobra.Command, args []string) error {
 		fmt.Print(metrics.RenderHotspots(metricsResult))
 	}
 
+	return nil
+}
+
+func handleSnapshot(res *discovery.DiscoveredResources) error {
+	parts := strings.SplitN(snapshotOp, " ", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid --snapshot format, use: save <name> or diff <name>")
+	}
+
+	op := parts[0]
+	name := parts[1]
+
+	switch op {
+	case "save":
+		if err := snapshot.SaveSnapshot(name, res); err != nil {
+			return fmt.Errorf("failed to save snapshot: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "Snapshot '%s' saved successfully.\n", name)
+		return nil
+
+	case "diff":
+		saved, err := snapshot.LoadSnapshot(name)
+		if err != nil {
+			return fmt.Errorf("failed to load snapshot: %w", err)
+		}
+		current := snapshot.BuildCurrentSnapshot(res)
+		diffResult := snapshot.DiffSnapshot(current, saved)
+		fmt.Print(snapshot.RenderDiff(diffResult, name))
+		return nil
+
+	default:
+		return fmt.Errorf("unknown snapshot operation '%s', use: save or diff", op)
+	}
+}
+
+func handleTrace(ctx context.Context) error {
+	fmt.Fprintf(os.Stderr, "Connecting to cluster...\n")
+
+	c, err := client.NewClusterClient(kubeconfig, contextName, namespace)
+	if err != nil {
+		return fmt.Errorf("cluster connection failed: %w", err)
+	}
+
+	version, _ := c.Clientset.ServerVersion()
+	fmt.Fprintf(os.Stderr, "Connected to Kubernetes %s\n\n", version.GitVersion)
+
+	fmt.Fprintf(os.Stderr, "Discovering resources...\n")
+	d := discovery.NewDiscoverer(c, namespace)
+	res, err := d.Discover(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: discovery completed with errors: %v\n", err)
+	}
+
+	result, err := trace.Trace(traceTarget, res)
+	if err != nil {
+		return err
+	}
+
+	fmt.Print(trace.RenderTrace(result))
 	return nil
 }
 
