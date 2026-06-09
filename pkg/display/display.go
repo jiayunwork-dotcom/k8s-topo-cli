@@ -74,7 +74,13 @@ func renderTreeNode(sb *strings.Builder, node *topology.TopoNode, prefix string,
 	icon := topology.StatusIcon(node.Status)
 
 	if node.Type == topology.TypeNamespace {
-		sb.WriteString(fmt.Sprintf("%s%s %s %s\n", prefix, boldStyle.Render("📁"), icon, boldStyle.Render(node.Name)))
+		nameStr := node.Name
+		if len(node.ViolationAnnotations) > 0 {
+			for _, va := range node.ViolationAnnotations {
+				nameStr += " " + actionIconForAnnotation(va.Action)
+			}
+		}
+		sb.WriteString(fmt.Sprintf("%s%s %s %s\n", prefix, boldStyle.Render("📁"), icon, boldStyle.Render(nameStr)))
 	} else {
 		typeIcon := getTypeIcon(node.Type)
 		nameStr := node.Name
@@ -83,6 +89,18 @@ func renderTreeNode(sb *strings.Builder, node *topology.TopoNode, prefix string,
 			nodeName := pod.Spec.NodeName
 			if nodeName != "" {
 				nameStr = fmt.Sprintf("%s %s", node.Name, dimStyle.Render("["+nodeName+"]"))
+			}
+		}
+		if len(node.ViolationAnnotations) > 0 {
+			var parts []string
+			for _, va := range node.ViolationAnnotations {
+				if va.Current != "" && va.Limit != "" {
+					pctStr := fmt.Sprintf("+%.0f%%", va.OverPercent)
+					parts = append(parts, fmt.Sprintf("%s:%s/%s %s", va.Dimension, va.Current, va.Limit, pctStr))
+				}
+			}
+			if len(parts) > 0 {
+				nameStr = fmt.Sprintf("%s %s", nameStr, redStyle.Render("["+strings.Join(parts, " ")+"]"))
 			}
 		}
 		sb.WriteString(fmt.Sprintf("%s%s %s %s %s\n", prefix, typeIcon, icon, nameStr, colorizeStatus(node.Status)))
@@ -362,4 +380,17 @@ func RenderResourceSummary(res *discovery.DiscoveredResources) string {
 
 func PrintOutput(content string) {
 	fmt.Fprint(os.Stdout, content)
+}
+
+func actionIconForAnnotation(action string) string {
+	switch action {
+	case "block":
+		return "🚫"
+	case "warn":
+		return "⚠️"
+	case "report":
+		return "📋"
+	default:
+		return ""
+	}
 }

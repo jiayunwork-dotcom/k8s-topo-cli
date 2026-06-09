@@ -42,6 +42,15 @@ type TopoNode struct {
 	Parent   *TopoNode
 	Resource interface{}
 	Warnings []string
+	ViolationAnnotations []ViolationAnnotation
+}
+
+type ViolationAnnotation struct {
+	Action     string
+	Dimension  string
+	Current    string
+	Limit      string
+	OverPercent float64
 }
 
 type Topology struct {

@@ -39,6 +39,8 @@ var (
 	policyFile     string
 	auditOutput    string
 	auditDiff      string
+	auditEmit      bool
+	auditTemplate  string
 )
 
 var rootCmd = &cobra.Command{
@@ -64,6 +66,8 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&policyFile, "policy", "", "Path to quota policy YAML file for resource audit")
 	rootCmd.PersistentFlags().StringVar(&auditOutput, "audit-output", "", "Export audit result to JSON file")
 	rootCmd.PersistentFlags().StringVar(&auditDiff, "audit-diff", "", "Path to historical audit report JSON for trend comparison")
+	rootCmd.PersistentFlags().BoolVar(&auditEmit, "audit-emit", false, "Emit Kubernetes Warning Events for block-level violations")
+	rootCmd.PersistentFlags().StringVar(&auditTemplate, "audit-template", "", "Path to Go template file for rendering audit report (mutually exclusive with --audit-output)")
 }
 
 func Execute() {
@@ -102,11 +106,17 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	if policyFile != "" {
-		return handleAudit(res, c.ClusterName)
+		if auditOutput != "" && auditTemplate != "" {
+			return fmt.Errorf("--audit-output and --audit-template are mutually exclusive, please specify only one")
+		}
+		return handleAudit(ctx, res, c)
 	}
 
-	fmt.Fprintf(os.Stderr, "Building topology...\n")
-	topo := topology.BuildTopology(res)
+	var topoObj *topology.Topology
+	if topoMode || outputFmt == "" || interactive {
+		fmt.Fprintf(os.Stderr, "Building topology...\n")
+		topoObj = topology.BuildTopology(res)
+	}
 
 	var metricsResult *metrics.MetricsResult
 	var diagResult *diagnosis.DiagnosisResult
@@ -133,11 +143,11 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	if outputFmt != "" {
-		return handleOutput(topo, res, metricsResult, diagResult)
+		return handleOutput(topoObj, res, metricsResult, diagResult)
 	}
 
 	if interactive {
-		return tui.RunInteractive(ctx, c, res, topo, metricsResult, diagResult)
+		return tui.RunInteractive(ctx, c, res, topoObj, metricsResult, diagResult)
 	}
 
 	if tableMode {
@@ -146,11 +156,11 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	if topoMode {
-		fmt.Print(display.RenderTopo(topo, res))
+		fmt.Print(display.RenderTopo(topoObj, res))
 		return nil
 	}
 
-	fmt.Print(display.RenderTree(topo, res))
+	fmt.Print(display.RenderTree(topoObj, res))
 	fmt.Print(display.RenderResourceSummary(res))
 
 	healthResult := health.CalculateHealth(res, metricsResult)
@@ -299,7 +309,7 @@ func renderDiagOutput(d *diagnosis.DiagnosisResult) string {
 	return sb.String()
 }
 
-func handleAudit(res *discovery.DiscoveredResources, clusterName string) error {
+func handleAudit(ctx context.Context, res *discovery.DiscoveredResources, c *client.ClusterClient) error {
 	fmt.Fprintf(os.Stderr, "Loading quota policies...\n")
 	policies, err := audit.LoadPolicies(policyFile)
 	if err != nil {
@@ -313,11 +323,26 @@ func handleAudit(res *discovery.DiscoveredResources, clusterName string) error {
 	fmt.Fprintf(os.Stderr, "Evaluating policies against resource usage...\n")
 	nsResults := audit.EvaluatePolicies(policies, stats)
 
+	clusterName := c.ClusterName
 	if clusterName == "" {
 		clusterName = "unknown"
 	}
 
 	report := audit.BuildAuditReport(policies, nsResults, policyFile, clusterName)
+
+	if auditEmit {
+		fmt.Fprintf(os.Stderr, "Emitting violation events to Kubernetes...\n")
+		if err := audit.EmitViolationEvents(ctx, c.Clientset, nsResults); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to emit some events: %v\n", err)
+		}
+	}
+
+	if auditTemplate != "" {
+		if err := audit.RenderAuditReportWithTemplate(report, auditTemplate); err != nil {
+			os.Exit(1)
+		}
+		return nil
+	}
 
 	if auditOutput != "" {
 		if err := audit.ExportAuditReport(report, auditOutput); err != nil {
@@ -337,6 +362,13 @@ func handleAudit(res *discovery.DiscoveredResources, clusterName string) error {
 
 		diffResult := audit.DiffAuditReports(report, oldReport)
 		fmt.Print(audit.RenderDiffReport(diffResult))
+	}
+
+	if topoMode {
+		fmt.Fprintf(os.Stderr, "Building topology with audit annotations...\n")
+		topo := topology.BuildTopology(res)
+		audit.AnnotateTopologyWithViolations(topo, nsResults)
+		fmt.Print(display.RenderTree(topo, res))
 	}
 
 	return nil

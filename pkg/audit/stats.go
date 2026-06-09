@@ -3,7 +3,9 @@ package audit
 import (
 	"fmt"
 	"math"
+	"regexp"
 	"sort"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -100,12 +102,8 @@ func EvaluatePolicies(policies []Policy, stats []NamespaceStats) []NamespaceAudi
 		if policy.Scope == "cluster" {
 			targetStats = stats
 		} else {
-			targetSet := make(map[string]bool)
-			for _, t := range policy.Targets {
-				targetSet[t] = true
-			}
 			for _, s := range stats {
-				if targetSet[s.Namespace] {
+				if matchesAnyTarget(s.Namespace, policy.Targets) {
 					targetStats = append(targetStats, s)
 				}
 			}
@@ -302,4 +300,29 @@ func sortViolations(nsResult *NamespaceAuditResult) {
 
 func roundTwo(v float64) float64 {
 	return math.Round(v*100) / 100
+}
+
+func matchTarget(target, namespace string) bool {
+	if len(target) >= 2 && strings.HasPrefix(target, "/") && strings.HasSuffix(target, "/") {
+		pattern := target[1 : len(target)-1]
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			return false
+		}
+		return re.MatchString(namespace)
+	}
+	if strings.HasSuffix(target, "*") {
+		prefix := target[:len(target)-1]
+		return strings.HasPrefix(namespace, prefix)
+	}
+	return target == namespace
+}
+
+func matchesAnyTarget(namespace string, targets []string) bool {
+	for _, t := range targets {
+		if matchTarget(t, namespace) {
+			return true
+		}
+	}
+	return false
 }
