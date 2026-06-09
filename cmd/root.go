@@ -99,8 +99,7 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	if tableMode {
-		updateTableMetrics(res, metricsResult)
-		fmt.Print(display.RenderTable(res))
+		fmt.Print(display.RenderTable(res, metricsResult))
 		return nil
 	}
 
@@ -203,10 +202,4 @@ func renderDiagOutput(d *diagnosis.DiagnosisResult) string {
 	}
 
 	return sb.String()
-}
-
-func updateTableMetrics(res *discovery.DiscoveredResources, m *metrics.MetricsResult) {
-	if m == nil {
-		return
-	}
 }

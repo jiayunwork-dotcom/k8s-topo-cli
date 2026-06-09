@@ -12,6 +12,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 
 	"github.com/k8s-topo-cli/pkg/discovery"
+	"github.com/k8s-topo-cli/pkg/metrics"
 	"github.com/k8s-topo-cli/pkg/topology"
 )
 
@@ -241,7 +242,7 @@ func getSimplePodStatus(pod *corev1.Pod) string {
 	return string(pod.Status.Phase)
 }
 
-func RenderTable(res *discovery.DiscoveredResources) string {
+func RenderTable(res *discovery.DiscoveredResources, m *metrics.MetricsResult) string {
 	var sb strings.Builder
 
 	sb.WriteString(boldStyle.Render("═══ Kubernetes Pod Table ═══") + "\n\n")
@@ -281,6 +282,14 @@ func RenderTable(res *discovery.DiscoveredResources) string {
 			restartStr = redStyle.Render(restartStr + "⚠")
 		}
 
+		cpuStr := "N/A"
+		memStr := "N/A"
+		if m != nil && m.MetricsAvailable {
+			cpu, mem := metrics.GetPodMetricsPercent(m, pod.Namespace, pod.Name)
+			cpuStr = cpu
+			memStr = mem
+		}
+
 		row := fmt.Sprintf("%-20s %-20s %-45s %-20s %-10s %-10s %-20s %-8s %-8s",
 			pod.Namespace,
 			truncate(owner, 20),
@@ -289,8 +298,8 @@ func RenderTable(res *discovery.DiscoveredResources) string {
 			restartStr,
 			age,
 			truncate(pod.Spec.NodeName, 20),
-			"N/A",
-			"N/A")
+			cpuStr,
+			memStr)
 		sb.WriteString(row + "\n")
 	}
 

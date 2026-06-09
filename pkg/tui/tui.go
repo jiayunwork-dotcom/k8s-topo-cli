@@ -19,15 +19,15 @@ import (
 )
 
 var (
-	titleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).MarginBottom(1)
-	selectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
-	normalStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
-	dimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	warningStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	errorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	successStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	titleStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).MarginBottom(1)
+	selectedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
+	normalStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
+	dimStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	warningStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	errorStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	successStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	statusBarStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Background(lipgloss.Color("0"))
-	helpStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	helpStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
 )
 
 type listItem struct {
@@ -45,6 +45,13 @@ type detailView struct {
 	content string
 }
 
+type viewSnapshot struct {
+	viewName string
+	filtered []listItem
+	cursor   int
+	offset   int
+}
+
 type model struct {
 	client      *client.ClusterClient
 	resources   *discovery.DiscoveredResources
@@ -57,7 +64,7 @@ type model struct {
 	filtered    []listItem
 	cursor      int
 	offset      int
-	viewStack   []string
+	viewStack   []viewSnapshot
 	currentView string
 	detail      detailView
 	searchInput textinput.Model
@@ -95,10 +102,10 @@ func (m *model) buildMainList() {
 
 	for _, ns := range m.topo.Roots {
 		m.items = append(m.items, listItem{
-			name:      ns.Name,
-			kind:      "Namespace",
-			status:    ns.Status,
-			resource:  ns.Resource,
+			name:     ns.Name,
+			kind:     "Namespace",
+			status:   ns.Status,
+			resource: ns.Resource,
 		})
 
 		for _, child := range ns.Children {
@@ -158,7 +165,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 		case "q", "ctrl+c":
-			if m.currentView == "main" {
+			if m.currentView == "main" && len(m.viewStack) == 0 {
 				return m, tea.Quit
 			}
 			m.goBack()
@@ -187,10 +194,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "enter":
-			return m.handleEnter()
+			m.handleEnter()
+			return m, nil
 
-		case "esc":
-			if m.currentView == "main" {
+		case "esc", "backspace":
+			if m.currentView == "main" && len(m.viewStack) == 0 {
 				return m, tea.Quit
 			}
 			m.goBack()
@@ -202,20 +210,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, textinput.Blink
 
 		case "d":
-			return m.showDiagnosis()
+			m.showDiagnosis()
+			return m, nil
 
 		case "m":
-			return m.showMetricsView()
+			m.showMetricsView()
+			return m, nil
 
 		case "e":
-			return m.showEventsView()
+			m.showEventsView()
+			return m, nil
 		}
 	}
 
 	return m, nil
 }
 
-func (m model) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *model) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.searching = false
@@ -234,9 +245,21 @@ func (m model) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m model) handleEnter() (tea.Model, tea.Cmd) {
+func (m *model) pushView(newView string) {
+	snapshot := viewSnapshot{
+		viewName: m.currentView,
+		filtered: make([]listItem, len(m.filtered)),
+		cursor:   m.cursor,
+		offset:   m.offset,
+	}
+	copy(snapshot.filtered, m.filtered)
+	m.viewStack = append(m.viewStack, snapshot)
+	m.currentView = newView
+}
+
+func (m *model) handleEnter() {
 	if m.cursor >= len(m.filtered) {
-		return m, nil
+		return
 	}
 
 	item := m.filtered[m.cursor]
@@ -244,7 +267,7 @@ func (m model) handleEnter() (tea.Model, tea.Cmd) {
 	if item.kind == "Pod" {
 		pod, ok := item.resource.(*corev1.Pod)
 		if !ok {
-			return m, nil
+			return
 		}
 
 		detail := fmt.Sprintf("Pod: %s/%s\n", pod.Namespace, pod.Name)
@@ -284,15 +307,16 @@ func (m model) handleEnter() (tea.Model, tea.Cmd) {
 			detail += "\nRecent Logs:\n" + logs
 		}
 
-		m.viewStack = append(m.viewStack, m.currentView)
-		m.currentView = "detail"
+		m.pushView("detail")
 		m.detail = detailView{
 			title:   fmt.Sprintf("Pod: %s/%s", pod.Namespace, pod.Name),
 			content: detail,
 		}
+		m.cursor = 0
+		m.offset = 0
+
 	} else if item.kind == "Namespace" {
-		m.viewStack = append(m.viewStack, m.currentView)
-		m.currentView = "namespace"
+		m.pushView("namespace")
 		nsName := item.name
 		var nsItems []listItem
 		for _, it := range m.items {
@@ -304,37 +328,30 @@ func (m model) handleEnter() (tea.Model, tea.Cmd) {
 		m.cursor = 0
 		m.offset = 0
 	}
-
-	return m, nil
 }
 
-func (m model) showDiagnosis() (tea.Model, tea.Cmd) {
+func (m *model) showDiagnosis() {
 	if m.diagResult == nil {
-		return m, nil
+		return
 	}
-
-	m.viewStack = append(m.viewStack, m.currentView)
-	m.currentView = "diagnosis"
-
-	return m, nil
+	m.pushView("diagnosis")
+	m.cursor = 0
+	m.offset = 0
 }
 
-func (m model) showMetricsView() (tea.Model, tea.Cmd) {
+func (m *model) showMetricsView() {
 	if m.metrics == nil {
-		return m, nil
+		return
 	}
-
-	m.viewStack = append(m.viewStack, m.currentView)
-	m.currentView = "metrics"
-
-	return m, nil
+	m.pushView("metrics")
+	m.cursor = 0
+	m.offset = 0
 }
 
-func (m model) showEventsView() (tea.Model, tea.Cmd) {
-	m.viewStack = append(m.viewStack, m.currentView)
-	m.currentView = "events"
-
-	return m, nil
+func (m *model) showEventsView() {
+	m.pushView("events")
+	m.cursor = 0
+	m.offset = 0
 }
 
 func (m *model) goBack() {
@@ -345,15 +362,14 @@ func (m *model) goBack() {
 		m.offset = 0
 		return
 	}
-	prev := m.viewStack[len(m.viewStack)-1]
-	m.viewStack = m.viewStack[:len(m.viewStack)-1]
-	m.currentView = prev
 
-	if prev == "main" {
-		m.filtered = m.items
-		m.cursor = 0
-		m.offset = 0
-	}
+	snapshot := m.viewStack[len(m.viewStack)-1]
+	m.viewStack = m.viewStack[:len(m.viewStack)-1]
+
+	m.currentView = snapshot.viewName
+	m.filtered = snapshot.filtered
+	m.cursor = snapshot.cursor
+	m.offset = snapshot.offset
 }
 
 func (m model) View() string {
@@ -415,7 +431,7 @@ func (m model) renderList() string {
 	}
 
 	sb.WriteString("\n" + statusBarStyle.Render(fmt.Sprintf(" %d/%d items ", m.cursor+1, len(m.filtered))))
-	sb.WriteString(helpStyle.Render("  ↑↓ navigate | Enter drill-in | / search | d diagnosis | m metrics | e events | q quit"))
+	sb.WriteString(helpStyle.Render("  ↑↓ navigate | Enter drill-in | / search | d diag | m metrics | e events | Esc back | q quit"))
 
 	return sb.String()
 }
@@ -424,7 +440,7 @@ func (m model) renderDetail() string {
 	var sb strings.Builder
 	sb.WriteString(titleStyle.Render("📋 "+m.detail.title) + "\n")
 	sb.WriteString(m.detail.content)
-	sb.WriteString("\n" + helpStyle.Render("Esc/Enter to go back | q to quit"))
+	sb.WriteString("\n" + helpStyle.Render("Esc/Backspace to go back | q to quit"))
 	return sb.String()
 }
 
@@ -479,7 +495,7 @@ func (m model) renderDiagnosis() string {
 		}
 	}
 
-	sb.WriteString("\n" + helpStyle.Render("Esc to go back | q to quit"))
+	sb.WriteString("\n" + helpStyle.Render("Esc/Backspace to go back | q to quit"))
 	return sb.String()
 }
 
@@ -494,7 +510,7 @@ func (m model) renderMetrics() string {
 		sb.WriteString(metrics.RenderHotspots(m.metrics))
 	}
 
-	sb.WriteString(helpStyle.Render("Esc to go back | q to quit"))
+	sb.WriteString(helpStyle.Render("Esc/Backspace to go back | q to quit"))
 	return sb.String()
 }
 
@@ -523,7 +539,7 @@ func (m model) renderEvents() string {
 		}
 	}
 
-	sb.WriteString(helpStyle.Render("Esc to go back | q to quit"))
+	sb.WriteString(helpStyle.Render("Esc/Backspace to go back | q to quit"))
 	return sb.String()
 }
 

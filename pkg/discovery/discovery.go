@@ -18,20 +18,20 @@ import (
 )
 
 type ResourceCounts struct {
-	Namespaces      int
-	Deployments     int
-	StatefulSets    int
-	DaemonSets      int
-	ReplicaSets     int
-	Pods            int
-	Services        int
-	Ingresses       int
-	PVCs            int
-	PVs             int
-	ConfigMaps      int
-	Secrets         int
-	Jobs            int
-	CronJobs        int
+	Namespaces   int
+	Deployments  int
+	StatefulSets int
+	DaemonSets   int
+	ReplicaSets  int
+	Pods         int
+	Services     int
+	Ingresses    int
+	PVCs         int
+	PVs          int
+	ConfigMaps   int
+	Secrets      int
+	Jobs         int
+	CronJobs     int
 }
 
 type DiscoveredResources struct {
@@ -69,105 +69,297 @@ func NewDiscoverer(c *client.ClusterClient, namespace string) *Discoverer {
 	}
 }
 
+type discoverResult struct {
+	namespaces   []*corev1.Namespace
+	deployments  []*appsv1.Deployment
+	statefulSets []*appsv1.StatefulSet
+	daemonSets   []*appsv1.DaemonSet
+	replicaSets  []*appsv1.ReplicaSet
+	pods         []*corev1.Pod
+	services     []*corev1.Service
+	ingresses    []*networkingv1.Ingress
+	pvcs         []*corev1.PersistentVolumeClaim
+	pvs          []*corev1.PersistentVolume
+	configMaps   []*corev1.ConfigMap
+	secrets      []*corev1.Secret
+	nodes        []*corev1.Node
+	events       []*corev1.Event
+	err          error
+	name         string
+}
+
 func (d *Discoverer) Discover(ctx context.Context) (*DiscoveredResources, error) {
-	resources := &DiscoveredResources{}
-	var errs []error
-
-	type result struct {
-		name string
-		err  error
-	}
-
-	ch := make(chan result, 14)
+	resultCh := make(chan discoverResult, 14)
 	sem := make(chan struct{}, d.maxConns)
 
 	var wg sync.WaitGroup
 
-	discoverFn := func(name string, fn func() error) {
+	launch := func(name string, fn func() discoverResult) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			if err := fn(); err != nil {
-				ch <- result{name: name, err: err}
-				return
-			}
-			ch <- result{name: name, err: nil}
+			r := fn()
+			r.name = name
+			resultCh <- r
 		}()
 	}
 
-	discoverFn("namespaces", func() error {
+	launch("namespaces", func() discoverResult {
 		list, err := d.client.Clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
 		if err != nil {
-			return err
+			return discoverResult{err: err}
 		}
+		items := make([]*corev1.Namespace, len(list.Items))
 		for i := range list.Items {
-			resources.Namespaces = append(resources.Namespaces, &list.Items[i])
+			items[i] = &list.Items[i]
 		}
-		return nil
+		return discoverResult{namespaces: items}
 	})
 
-	discoverFn("deployments", func() error {
-		return d.discoverDeployments(ctx, resources)
+	launch("deployments", func() discoverResult {
+		ns := d.namespace
+		list, err := d.client.Clientset.AppsV1().Deployments(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return discoverResult{err: err}
+		}
+		items := make([]*appsv1.Deployment, len(list.Items))
+		for i := range list.Items {
+			items[i] = &list.Items[i]
+		}
+		return discoverResult{deployments: items}
 	})
 
-	discoverFn("statefulsets", func() error {
-		return d.discoverStatefulSets(ctx, resources)
+	launch("statefulsets", func() discoverResult {
+		ns := d.namespace
+		list, err := d.client.Clientset.AppsV1().StatefulSets(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return discoverResult{err: err}
+		}
+		items := make([]*appsv1.StatefulSet, len(list.Items))
+		for i := range list.Items {
+			items[i] = &list.Items[i]
+		}
+		return discoverResult{statefulSets: items}
 	})
 
-	discoverFn("daemonsets", func() error {
-		return d.discoverDaemonSets(ctx, resources)
+	launch("daemonsets", func() discoverResult {
+		ns := d.namespace
+		list, err := d.client.Clientset.AppsV1().DaemonSets(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return discoverResult{err: err}
+		}
+		items := make([]*appsv1.DaemonSet, len(list.Items))
+		for i := range list.Items {
+			items[i] = &list.Items[i]
+		}
+		return discoverResult{daemonSets: items}
 	})
 
-	discoverFn("replicasets", func() error {
-		return d.discoverReplicaSets(ctx, resources)
+	launch("replicasets", func() discoverResult {
+		ns := d.namespace
+		list, err := d.client.Clientset.AppsV1().ReplicaSets(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return discoverResult{err: err}
+		}
+		items := make([]*appsv1.ReplicaSet, len(list.Items))
+		for i := range list.Items {
+			items[i] = &list.Items[i]
+		}
+		return discoverResult{replicaSets: items}
 	})
 
-	discoverFn("pods", func() error {
-		return d.discoverPods(ctx, resources)
+	launch("pods", func() discoverResult {
+		var items []*corev1.Pod
+		ns := d.namespace
+		if ns == "" {
+			continueToken := ""
+			for {
+				list, err := d.client.Clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+					Limit:    int64(d.batchSize),
+					Continue: continueToken,
+				})
+				if err != nil {
+					return discoverResult{err: err}
+				}
+				for i := range list.Items {
+					items = append(items, &list.Items[i])
+				}
+				if list.Continue == "" {
+					break
+				}
+				continueToken = list.Continue
+			}
+		} else {
+			list, err := d.client.Clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
+			if err != nil {
+				return discoverResult{err: err}
+			}
+			items = make([]*corev1.Pod, len(list.Items))
+			for i := range list.Items {
+				items[i] = &list.Items[i]
+			}
+		}
+		return discoverResult{pods: items}
 	})
 
-	discoverFn("services", func() error {
-		return d.discoverServices(ctx, resources)
+	launch("services", func() discoverResult {
+		ns := d.namespace
+		list, err := d.client.Clientset.CoreV1().Services(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return discoverResult{err: err}
+		}
+		items := make([]*corev1.Service, len(list.Items))
+		for i := range list.Items {
+			items[i] = &list.Items[i]
+		}
+		return discoverResult{services: items}
 	})
 
-	discoverFn("ingresses", func() error {
-		return d.discoverIngresses(ctx, resources)
+	launch("ingresses", func() discoverResult {
+		ns := d.namespace
+		list, err := d.client.Clientset.NetworkingV1().Ingresses(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return discoverResult{err: err}
+		}
+		items := make([]*networkingv1.Ingress, len(list.Items))
+		for i := range list.Items {
+			items[i] = &list.Items[i]
+		}
+		return discoverResult{ingresses: items}
 	})
 
-	discoverFn("pvcs", func() error {
-		return d.discoverPVCs(ctx, resources)
+	launch("pvcs", func() discoverResult {
+		ns := d.namespace
+		list, err := d.client.Clientset.CoreV1().PersistentVolumeClaims(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return discoverResult{err: err}
+		}
+		items := make([]*corev1.PersistentVolumeClaim, len(list.Items))
+		for i := range list.Items {
+			items[i] = &list.Items[i]
+		}
+		return discoverResult{pvcs: items}
 	})
 
-	discoverFn("pvs", func() error {
-		return d.discoverPVs(ctx, resources)
+	launch("pvs", func() discoverResult {
+		list, err := d.client.Clientset.CoreV1().PersistentVolumes().List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return discoverResult{err: err}
+		}
+		items := make([]*corev1.PersistentVolume, len(list.Items))
+		for i := range list.Items {
+			items[i] = &list.Items[i]
+		}
+		return discoverResult{pvs: items}
 	})
 
-	discoverFn("configmaps", func() error {
-		return d.discoverConfigMaps(ctx, resources)
+	launch("configmaps", func() discoverResult {
+		ns := d.namespace
+		list, err := d.client.Clientset.CoreV1().ConfigMaps(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return discoverResult{err: err}
+		}
+		items := make([]*corev1.ConfigMap, len(list.Items))
+		for i := range list.Items {
+			items[i] = &list.Items[i]
+		}
+		return discoverResult{configMaps: items}
 	})
 
-	discoverFn("secrets", func() error {
-		return d.discoverSecrets(ctx, resources)
+	launch("secrets", func() discoverResult {
+		ns := d.namespace
+		list, err := d.client.Clientset.CoreV1().Secrets(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return discoverResult{err: err}
+		}
+		items := make([]*corev1.Secret, len(list.Items))
+		for i := range list.Items {
+			items[i] = &list.Items[i]
+		}
+		return discoverResult{secrets: items}
 	})
 
-	discoverFn("nodes", func() error {
-		return d.discoverNodes(ctx, resources)
+	launch("nodes", func() discoverResult {
+		list, err := d.client.Clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return discoverResult{err: err}
+		}
+		items := make([]*corev1.Node, len(list.Items))
+		for i := range list.Items {
+			items[i] = &list.Items[i]
+		}
+		return discoverResult{nodes: items}
 	})
 
-	discoverFn("events", func() error {
-		return d.discoverEvents(ctx, resources)
+	launch("events", func() discoverResult {
+		ns := d.namespace
+		list, err := d.client.Clientset.CoreV1().Events(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return discoverResult{err: err}
+		}
+		items := make([]*corev1.Event, len(list.Items))
+		for i := range list.Items {
+			items[i] = &list.Items[i]
+		}
+		return discoverResult{events: items}
 	})
 
 	go func() {
 		wg.Wait()
-		close(ch)
+		close(resultCh)
 	}()
 
-	for r := range ch {
+	resources := &DiscoveredResources{}
+	var errs []error
+
+	for r := range resultCh {
 		if r.err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", r.name, r.err))
+			continue
+		}
+		if r.namespaces != nil {
+			resources.Namespaces = append(resources.Namespaces, r.namespaces...)
+		}
+		if r.deployments != nil {
+			resources.Deployments = append(resources.Deployments, r.deployments...)
+		}
+		if r.statefulSets != nil {
+			resources.StatefulSets = append(resources.StatefulSets, r.statefulSets...)
+		}
+		if r.daemonSets != nil {
+			resources.DaemonSets = append(resources.DaemonSets, r.daemonSets...)
+		}
+		if r.replicaSets != nil {
+			resources.ReplicaSets = append(resources.ReplicaSets, r.replicaSets...)
+		}
+		if r.pods != nil {
+			resources.Pods = append(resources.Pods, r.pods...)
+		}
+		if r.services != nil {
+			resources.Services = append(resources.Services, r.services...)
+		}
+		if r.ingresses != nil {
+			resources.Ingresses = append(resources.Ingresses, r.ingresses...)
+		}
+		if r.pvcs != nil {
+			resources.PVCs = append(resources.PVCs, r.pvcs...)
+		}
+		if r.pvs != nil {
+			resources.PVs = append(resources.PVs, r.pvs...)
+		}
+		if r.configMaps != nil {
+			resources.ConfigMaps = append(resources.ConfigMaps, r.configMaps...)
+		}
+		if r.secrets != nil {
+			resources.Secrets = append(resources.Secrets, r.secrets...)
+		}
+		if r.nodes != nil {
+			resources.Nodes = append(resources.Nodes, r.nodes...)
+		}
+		if r.events != nil {
+			resources.Events = append(resources.Events, r.events...)
 		}
 	}
 
@@ -192,215 +384,6 @@ func (d *Discoverer) Discover(ctx context.Context) (*DiscoveredResources, error)
 	}
 
 	return resources, nil
-}
-
-func (d *Discoverer) listNamespaces(ctx context.Context) ([]string, error) {
-	if d.namespace != "" {
-		return []string{d.namespace}, nil
-	}
-
-	list, err := d.client.Clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-
-	ns := make([]string, 0, len(list.Items))
-	for _, item := range list.Items {
-		ns = append(ns, item.Name)
-	}
-	return ns, nil
-}
-
-func (d *Discoverer) discoverDeployments(ctx context.Context, res *DiscoveredResources) error {
-	if d.namespace != "" {
-		list, err := d.client.Clientset.AppsV1().Deployments(d.namespace).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return err
-		}
-		for i := range list.Items {
-			res.Deployments = append(res.Deployments, &list.Items[i])
-		}
-		return nil
-	}
-
-	list, err := d.client.Clientset.AppsV1().Deployments("").List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	for i := range list.Items {
-		res.Deployments = append(res.Deployments, &list.Items[i])
-	}
-	return nil
-}
-
-func (d *Discoverer) discoverStatefulSets(ctx context.Context, res *DiscoveredResources) error {
-	ns := d.namespace
-	if ns == "" {
-		ns = ""
-	}
-	list, err := d.client.Clientset.AppsV1().StatefulSets(ns).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	for i := range list.Items {
-		res.StatefulSets = append(res.StatefulSets, &list.Items[i])
-	}
-	return nil
-}
-
-func (d *Discoverer) discoverDaemonSets(ctx context.Context, res *DiscoveredResources) error {
-	ns := d.namespace
-	list, err := d.client.Clientset.AppsV1().DaemonSets(ns).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	for i := range list.Items {
-		res.DaemonSets = append(res.DaemonSets, &list.Items[i])
-	}
-	return nil
-}
-
-func (d *Discoverer) discoverReplicaSets(ctx context.Context, res *DiscoveredResources) error {
-	ns := d.namespace
-	list, err := d.client.Clientset.AppsV1().ReplicaSets(ns).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	for i := range list.Items {
-		res.ReplicaSets = append(res.ReplicaSets, &list.Items[i])
-	}
-	return nil
-}
-
-func (d *Discoverer) discoverPods(ctx context.Context, res *DiscoveredResources) error {
-	ns := d.namespace
-	if ns == "" {
-		return d.discoverPodsBatch(ctx, res)
-	}
-
-	list, err := d.client.Clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	for i := range list.Items {
-		res.Pods = append(res.Pods, &list.Items[i])
-	}
-	return nil
-}
-
-func (d *Discoverer) discoverPodsBatch(ctx context.Context, res *DiscoveredResources) error {
-	continueToken := ""
-	for {
-		list, err := d.client.Clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{
-			Limit:    int64(d.batchSize),
-			Continue: continueToken,
-		})
-		if err != nil {
-			return err
-		}
-		for i := range list.Items {
-			res.Pods = append(res.Pods, &list.Items[i])
-		}
-		if list.Continue == "" {
-			break
-		}
-		continueToken = list.Continue
-	}
-	return nil
-}
-
-func (d *Discoverer) discoverServices(ctx context.Context, res *DiscoveredResources) error {
-	ns := d.namespace
-	list, err := d.client.Clientset.CoreV1().Services(ns).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	for i := range list.Items {
-		res.Services = append(res.Services, &list.Items[i])
-	}
-	return nil
-}
-
-func (d *Discoverer) discoverIngresses(ctx context.Context, res *DiscoveredResources) error {
-	ns := d.namespace
-	list, err := d.client.Clientset.NetworkingV1().Ingresses(ns).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	for i := range list.Items {
-		res.Ingresses = append(res.Ingresses, &list.Items[i])
-	}
-	return nil
-}
-
-func (d *Discoverer) discoverPVCs(ctx context.Context, res *DiscoveredResources) error {
-	ns := d.namespace
-	list, err := d.client.Clientset.CoreV1().PersistentVolumeClaims(ns).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	for i := range list.Items {
-		res.PVCs = append(res.PVCs, &list.Items[i])
-	}
-	return nil
-}
-
-func (d *Discoverer) discoverPVs(ctx context.Context, res *DiscoveredResources) error {
-	list, err := d.client.Clientset.CoreV1().PersistentVolumes().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	for i := range list.Items {
-		res.PVs = append(res.PVs, &list.Items[i])
-	}
-	return nil
-}
-
-func (d *Discoverer) discoverConfigMaps(ctx context.Context, res *DiscoveredResources) error {
-	ns := d.namespace
-	list, err := d.client.Clientset.CoreV1().ConfigMaps(ns).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	for i := range list.Items {
-		res.ConfigMaps = append(res.ConfigMaps, &list.Items[i])
-	}
-	return nil
-}
-
-func (d *Discoverer) discoverSecrets(ctx context.Context, res *DiscoveredResources) error {
-	ns := d.namespace
-	list, err := d.client.Clientset.CoreV1().Secrets(ns).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	for i := range list.Items {
-		res.Secrets = append(res.Secrets, &list.Items[i])
-	}
-	return nil
-}
-
-func (d *Discoverer) discoverNodes(ctx context.Context, res *DiscoveredResources) error {
-	list, err := d.client.Clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	for i := range list.Items {
-		res.Nodes = append(res.Nodes, &list.Items[i])
-	}
-	return nil
-}
-
-func (d *Discoverer) discoverEvents(ctx context.Context, res *DiscoveredResources) error {
-	ns := d.namespace
-	list, err := d.client.Clientset.CoreV1().Events(ns).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	for i := range list.Items {
-		res.Events = append(res.Events, &list.Items[i])
-	}
-	return nil
 }
 
 func GetPodsByOwner(pods []*corev1.Pod, ownerUID types.UID) []*corev1.Pod {

@@ -305,5 +305,7 @@ func GetPodMetricsPercent(result *MetricsResult, namespace, name string) (cpuPct
 			return
 		}
 	}
-	return "N/A", "N/A"
+	cpuPct = "-"
+	memPct = "-"
+	return
 }

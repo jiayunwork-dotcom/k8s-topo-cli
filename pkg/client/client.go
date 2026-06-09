@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -139,7 +140,9 @@ func (c *ClusterClient) IsMetricsAvailable() bool {
 	if c.MetricsClient == nil {
 		return false
 	}
-	_, err := c.MetricsClient.MetricsV1beta1().PodMetricses("").List(nil, metav1.ListOptions{Limit: 1})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := c.MetricsClient.MetricsV1beta1().PodMetricses("").List(ctx, metav1.ListOptions{Limit: 1})
 	return err == nil
 }
 
