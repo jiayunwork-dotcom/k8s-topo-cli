@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/k8s-topo-cli/pkg/audit"
 	"github.com/k8s-topo-cli/pkg/client"
 	"github.com/k8s-topo-cli/pkg/diagnosis"
 	"github.com/k8s-topo-cli/pkg/discovery"
@@ -35,6 +36,9 @@ var (
 	snapshotDiff   string
 	rulesFile      string
 	traceTarget    string
+	policyFile     string
+	auditOutput    string
+	auditDiff      string
 )
 
 var rootCmd = &cobra.Command{
@@ -57,6 +61,9 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&snapshotDiff, "snapshot-diff", "", "Diff current cluster state against snapshot with given name")
 	rootCmd.PersistentFlags().StringVar(&rulesFile, "rules", "", "Path to custom alert rules YAML file")
 	rootCmd.PersistentFlags().StringVar(&traceTarget, "trace", "", "Trace upstream dependencies: <type>/<name> (e.g. pod/nginx-abc123)")
+	rootCmd.PersistentFlags().StringVar(&policyFile, "policy", "", "Path to quota policy YAML file for resource audit")
+	rootCmd.PersistentFlags().StringVar(&auditOutput, "audit-output", "", "Export audit result to JSON file")
+	rootCmd.PersistentFlags().StringVar(&auditDiff, "audit-diff", "", "Path to historical audit report JSON for trend comparison")
 }
 
 func Execute() {
@@ -92,6 +99,10 @@ func run(cmd *cobra.Command, args []string) error {
 
 	if snapshotSave != "" || snapshotDiff != "" {
 		return handleSnapshot(res)
+	}
+
+	if policyFile != "" {
+		return handleAudit(res, version.GitVersion)
 	}
 
 	fmt.Fprintf(os.Stderr, "Building topology...\n")
@@ -286,4 +297,48 @@ func renderDiagOutput(d *diagnosis.DiagnosisResult) string {
 	}
 
 	return sb.String()
+}
+
+func handleAudit(res *discovery.DiscoveredResources, clusterVersion string) error {
+	fmt.Fprintf(os.Stderr, "Loading quota policies...\n")
+	policies, err := audit.LoadPolicies(policyFile)
+	if err != nil {
+		return fmt.Errorf("failed to load policies: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "Loaded %d policy(ies) from %s\n", len(policies), policyFile)
+
+	fmt.Fprintf(os.Stderr, "Scanning namespace resources...\n")
+	stats := audit.CollectNamespaceStats(res)
+
+	fmt.Fprintf(os.Stderr, "Evaluating policies against resource usage...\n")
+	nsResults := audit.EvaluatePolicies(policies, stats)
+
+	clusterName := "kubernetes"
+	if clusterVersion != "" {
+		clusterName = clusterVersion
+	}
+
+	report := audit.BuildAuditReport(policies, nsResults, policyFile, clusterName)
+
+	if auditOutput != "" {
+		if err := audit.ExportAuditReport(report, auditOutput); err != nil {
+			return fmt.Errorf("failed to export audit report: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "Audit report exported to %s\n", auditOutput)
+	}
+
+	fmt.Print(audit.RenderAuditSummary(report))
+
+	if auditDiff != "" {
+		fmt.Fprintf(os.Stderr, "Loading historical audit report...\n")
+		oldReport, err := audit.LoadAuditReport(auditDiff)
+		if err != nil {
+			return fmt.Errorf("failed to load historical audit report: %w", err)
+		}
+
+		diffResult := audit.DiffAuditReports(report, oldReport)
+		fmt.Print(audit.RenderDiffReport(diffResult))
+	}
+
+	return nil
 }
